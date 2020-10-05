@@ -17,18 +17,30 @@
 #include <signal.h>  
 #include <sys/wait.h>  
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <pthread.h>
 #include "filesystem.h"
 #include "mapreduce.h"
+#include "package.h"
 
 struct process{
     pid_t pid;
     int pipefd[2];
 };
 
+struct mt
+{
+    int num;
+    pthread_mutex_t mutex;
+    pthread_mutexattr_t mutexattr;
+};
+
 class process_pool{
 private:
     process_pool(int process_number=10);
+    ~process_pool();
     static process_pool* _instance;
+    struct mt *mm;
 public:
     static process_pool* create(int process_number=10){
         if(_instance==NULL){
@@ -50,12 +62,6 @@ private:
     int listen_fd;
     int stop;
     process* sub_process;
-};
-
-struct Message{
-    int start;
-    int end;
-    char savefile[1024];
 };
 
 #endif

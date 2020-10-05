@@ -1,5 +1,5 @@
 #include"process_pool.h"
-
+#include <iostream>
 
 process_pool* process_pool::_instance = NULL;
 
@@ -23,6 +23,12 @@ static void removefd(int epollfd, int fd){
 
 
 process_pool::process_pool(int process_number):process_number(process_number), index(-1), stop(false){
+    mm = (mt*)mmap(NULL,sizeof(*mm),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANON,-1,0);
+    memset(mm, 0x00, sizeof(mt));
+    pthread_mutexattr_init(&mm->mutexattr);
+    pthread_mutexattr_setpshared(&mm->mutexattr, PTHREAD_PROCESS_SHARED);
+    pthread_mutex_init(&mm->mutex,&mm->mutexattr); 
+    
     assert((process_number > 0)&&(process_number<=MAX_PROCESS_NUM));
     sub_process = new process[process_number];
 
@@ -94,45 +100,42 @@ void process_pool::run_worker(){
         for(int i=0;i<num;i++){
             int sockfd = events[i].data.fd;
             if((sockfd==pipefd)&&(events[i].events&EPOLLIN)){                   //主进程发来数据
-                /*
-                char recvbuf[1024];
-                ret = recv(sockfd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
+                package_header header;
+                ret = recv(sockfd, (void*)&header, sizeof(header), MSG_PEEK);
                 if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
-                if(recvbuf[0]=='q'){
-                    stop = true;
-                    break;
+                if(header.package_type == MAP_TASK){
+                    map_task_package mtp;
+                    ret = recv(sockfd, (void*)&mtp, sizeof(mtp), MSG_DONTWAIT);
+                    char buf[1024];
+                    FILE *fp;
+                    fs->fsopen(&fp, "file/origin.txt", "r");
+                    fs->fsseek(fp,mtp.start,SEEK_SET);
+                    ret = fs->fsread(buf,1,mtp.end-mtp.start,fp);
+                    fs->fsclose(fp);
+                    std::string str(buf);
+                    std::cout<<str<<std::endl;
+
+                    Mapper_Point->set_config(mtp.savefile);
+                    Mapper_Point->Map(str);
+
+                    map_result_package mrp(SUCCESS);
+                    ret = send(sockfd, (void*)&mrp, sizeof(mrp), MSG_DONTWAIT);
                 }
-                else printf(recvbuf);
-                char sendbuf[1024];
-                sprintf(sendbuf, "This is No.%d process...\n", index);
-                ret = send(sockfd, sendbuf, strlen(sendbuf), MSG_DONTWAIT);
-                if((ret<0)&&(errno!=EAGAIN)){
-                    printf("send failure.\n");
-                    continue;
-                }*/
-                Message mes;
-                ret = recv(sockfd, (void*)&mes, sizeof(mes), MSG_DONTWAIT);
-                if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
-                char buf[1024];
-                FILE *fp;
-                fs->fsopen(&fp, "file/origin.txt", "r");
-                fs->fsseek(fp,mes.start,SEEK_SET);
-                ret = fs->fsread(buf,1,mes.end-mes.start,fp);
-                printf(buf);
-                fs->fsclose(fp);
-                std::string str(buf);
+                else if(header.package_type == PART_TASK){
+                    partition_task_package ptp;
+                    ret = recv(sockfd, (void*)&ptp, sizeof(ptp), MSG_DONTWAIT);
+                    pthread_mutex_lock(&mm->mutex);
+                    Mapper_Point->Partition(ptp.savefile);
+                    pthread_mutex_unlock(&mm->mutex);
 
-                Mapper_Point->set_config(mes.savefile);
-                Mapper_Point->Map(str);
-
-                char sendbuf[1024] = "map function finished...\n";
-                ret = send(sockfd, sendbuf, strlen(sendbuf), MSG_DONTWAIT);
-                char recvbuf[1024];
-                ret = recv(sockfd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
-                if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
-
-
-                stop = true;
+                    partition_result_package prp(SUCCESS);
+                    ret = send(sockfd, (void*)&prp, sizeof(prp), MSG_DONTWAIT);
+                    //stop = true;
+                }
+                else if(header.package_type == REDUCE_TASK){
+                    printf("No.%d worker to do reduce task...\n", index);
+                    
+                }
             }
             else if((sockfd==sig_pipefd[0])&&(events[i].events&EPOLLIN)){       //接收信号
                 int sig;
@@ -177,13 +180,13 @@ void process_pool::run_master(){
         char buf[2];
         ret = fs->fsread(buf,1,1,fp);
         if(buf[0]=='\n'){
-            Message mes;
-            mes.start = start;
-            mes.end = end;
+            char filename[128];
+            sprintf(filename, "file/intermediate%d.txt", now);
+            map_task_package mtp(start, end, filename);
             if(end-start==0)break;
             start = end+1;
-            sprintf(mes.savefile, "file/intermediate%d.txt", now);
-            ret = send(sub_process[now].pipefd[0], (void*)&mes, sizeof(mes), MSG_DONTWAIT);
+            
+            ret = send(sub_process[now].pipefd[0], (void*)&mtp, sizeof(mtp), MSG_DONTWAIT);
             if((ret<0)&&(errno!=EAGAIN)){
                 printf("master send failure.\n");
             }
@@ -193,17 +196,6 @@ void process_pool::run_master(){
     }
     fs->fsclose(fp);
         
-    /*
-    for(int i=0;i<process_number;i++){
-        char sendbuf[1024];
-        sprintf(sendbuf, "This master send message to No.%d process.\n", i);
-        ret = send(sub_process[i].pipefd[0], sendbuf, strlen(sendbuf), MSG_DONTWAIT);
-        if((ret<0)&&(errno!=EAGAIN)){
-            printf("master send failure.\n");
-        }
-    }
-    */
-    
     while(!stop){
         int num = epoll_wait(epollfd, events, MAX_EVENT_NUM, -1);
         if((num<0)&&(errno!=EINTR)){
@@ -248,19 +240,30 @@ void process_pool::run_master(){
                 }
             }
             else{
-                char recvbuf[1024];
-                ret = recv(sockfd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
+                package_header header;
+                ret = recv(sockfd, (void*)&header, sizeof(header), MSG_PEEK);
                 if((ret<0)&&(errno!=EINTR)){
                     continue;
                 }
                 if(ret==0){         //接收到0，说明对面已经关闭了socket
                     continue;
                 }
-                printf(recvbuf);
-                char sendbuf[1024] = "file/region.txt";
-                send(sockfd, sendbuf, strlen(sendbuf)+1, MSG_DONTWAIT);
-                if((ret<0)&&(errno!=EAGAIN)){
-                    printf("master send failure.\n");
+                if(header.package_type == MAP_RES){
+                    map_result_package mrp;
+                    ret = recv(sockfd, (void*)&mrp, sizeof(mrp), MSG_DONTWAIT);
+                    
+                    partition_task_package ptp("file/region.txt");
+                    ret = send(sockfd, (void*)&ptp, sizeof(ptp), MSG_DONTWAIT);
+                }
+                else if(header.package_type == PART_RES){
+                    partition_result_package prp;
+                    ret = recv(sockfd, (void*)&prp, sizeof(prp), MSG_DONTWAIT);
+                    
+                    now--;
+                    if(now == 0){
+                        reduce_task_package rtp("file/region.txt", "file/result.txt");
+                        ret = send(sockfd, (void*)&rtp, sizeof(rtp), MSG_DONTWAIT);
+                    }
                 }
             }
         }

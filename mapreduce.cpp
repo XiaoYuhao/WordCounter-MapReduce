@@ -22,10 +22,13 @@ void Mapper::Emit(const std::string &key, const std::string &value){
 }
 
 void Mapper::Partition(const char *filename){
+    char buf[4096];
+    fs->fsseek(fp, 0, SEEK_SET);
+    fs->fsread(buf, sizeof(buf), 1, fp);
     FILE *ffp;
     fs->fsopen(&ffp, filename, "a+");
-    
-
+    fs->fswrite(buf, strlen(buf), 1, ffp);
+    fs->fsclose(ffp);
 } 
 
 
