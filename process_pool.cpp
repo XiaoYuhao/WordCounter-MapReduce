@@ -3,6 +3,10 @@
 
 process_pool* process_pool::_instance = NULL;
 
+extern LocalFileSystem *fs;
+extern Mapper *Mapper_Point;
+extern Reducer *Reducer_Point;
+
 static int sig_pipefd[2];
 
 static void addfd(int epollfd, int fd){
@@ -27,11 +31,11 @@ process_pool::process_pool(int process_number):process_number(process_number), i
         assert(ret != -1);
         sub_process[i].pid = fork();
         assert(sub_process[i].pid >= 0);
-        if(sub_process[i].pid>0){               //父进程
+        if(sub_process[i].pid>0){               //master进程
             close(sub_process[i].pipefd[1]);
             continue;
         }
-        else{                                   //子进程
+        else{                                   //worker进程
             close(sub_process[i].pipefd[0]);
             index = i;
             break;
@@ -90,6 +94,7 @@ void process_pool::run_worker(){
         for(int i=0;i<num;i++){
             int sockfd = events[i].data.fd;
             if((sockfd==pipefd)&&(events[i].events&EPOLLIN)){                   //主进程发来数据
+                /*
                 char recvbuf[1024];
                 ret = recv(sockfd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
                 if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
@@ -104,7 +109,30 @@ void process_pool::run_worker(){
                 if((ret<0)&&(errno!=EAGAIN)){
                     printf("send failure.\n");
                     continue;
-                }
+                }*/
+                Message mes;
+                ret = recv(sockfd, (void*)&mes, sizeof(mes), MSG_DONTWAIT);
+                if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
+                char buf[1024];
+                FILE *fp;
+                fs->fsopen(&fp, "file/origin.txt", "r");
+                fs->fsseek(fp,mes.start,SEEK_SET);
+                ret = fs->fsread(buf,1,mes.end-mes.start,fp);
+                printf(buf);
+                fs->fsclose(fp);
+                std::string str(buf);
+
+                Mapper_Point->set_config(mes.savefile);
+                Mapper_Point->Map(str);
+
+                char sendbuf[1024] = "map function finished...\n";
+                ret = send(sockfd, sendbuf, strlen(sendbuf), MSG_DONTWAIT);
+                char recvbuf[1024];
+                ret = recv(sockfd, recvbuf, sizeof(recvbuf), MSG_DONTWAIT);
+                if((ret<0)&&(errno!=EAGAIN)||ret==0) continue;
+
+
+                stop = true;
             }
             else if((sockfd==sig_pipefd[0])&&(events[i].events&EPOLLIN)){       //接收信号
                 int sig;
@@ -140,6 +168,32 @@ void process_pool::run_master(){
         addfd(epollfd, sub_process[i].pipefd[0]);
     }
     int ret;
+    int now=0;
+    FILE *fp;
+    fs->fsopen(&fp, "file/origin.txt", "r");
+    assert((fp!=NULL));
+    int start=0,end=0;
+    while(feof(fp)==0){
+        char buf[2];
+        ret = fs->fsread(buf,1,1,fp);
+        if(buf[0]=='\n'){
+            Message mes;
+            mes.start = start;
+            mes.end = end;
+            if(end-start==0)break;
+            start = end+1;
+            sprintf(mes.savefile, "file/intermediate%d.txt", now);
+            ret = send(sub_process[now].pipefd[0], (void*)&mes, sizeof(mes), MSG_DONTWAIT);
+            if((ret<0)&&(errno!=EAGAIN)){
+                printf("master send failure.\n");
+            }
+            now++;
+        }
+        end++;
+    }
+    fs->fsclose(fp);
+        
+    /*
     for(int i=0;i<process_number;i++){
         char sendbuf[1024];
         sprintf(sendbuf, "This master send message to No.%d process.\n", i);
@@ -148,6 +202,7 @@ void process_pool::run_master(){
             printf("master send failure.\n");
         }
     }
+    */
     
     while(!stop){
         int num = epoll_wait(epollfd, events, MAX_EVENT_NUM, -1);
@@ -202,8 +257,8 @@ void process_pool::run_master(){
                     continue;
                 }
                 printf(recvbuf);
-                char sendbuf[1024] = "quit";
-                send(sockfd, sendbuf, strlen(sendbuf), MSG_DONTWAIT);
+                char sendbuf[1024] = "file/region.txt";
+                send(sockfd, sendbuf, strlen(sendbuf)+1, MSG_DONTWAIT);
                 if((ret<0)&&(errno!=EAGAIN)){
                     printf("master send failure.\n");
                 }

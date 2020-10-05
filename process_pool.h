@@ -10,12 +10,15 @@
 #include <unistd.h>  
 #include <errno.h>  
 #include <string.h>  
+#include <string>
 #include <fcntl.h>  
 #include <stdlib.h>  
 #include <sys/epoll.h>  
 #include <signal.h>  
 #include <sys/wait.h>  
 #include <sys/stat.h>
+#include "filesystem.h"
+#include "mapreduce.h"
 
 struct process{
     pid_t pid;
@@ -49,6 +52,10 @@ private:
     process* sub_process;
 };
 
-
+struct Message{
+    int start;
+    int end;
+    char savefile[1024];
+};
 
 #endif
