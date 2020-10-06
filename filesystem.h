@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/stat.h> 
 #include <stdlib.h>
+#include <stdarg.h>
 /*
 class FileSystem
 {
@@ -39,6 +40,8 @@ public:
     int fswrite(const void *ptr, size_t size, size_t nitems, FILE *stream);
     int fsclose(FILE *stream);
     int fsseek(FILE *stream, long int offset, int whence);
+    int fsscanf(FILE *stream, char *format, ... );
+    int fsprintf(FILE *stream, char *format, ... );
 
     ~LocalFileSystem(){}
 };

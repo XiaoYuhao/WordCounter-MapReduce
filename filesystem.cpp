@@ -26,4 +26,14 @@ int  LocalFileSystem::fsseek(FILE *stream, long int offset, int whence){
     return fseek(stream, offset, whence);
 }
 
+int LocalFileSystem::fsscanf(FILE *stream, char *format, ... ){
+    va_list argp;
+    va_start(argp, format);
+    return vfscanf(stream, format, argp);
+}
 
+int LocalFileSystem::fsprintf(FILE *stream, char *format, ... ){
+    va_list argp;
+    va_start(argp, format);
+    return vfprintf(stream, format, argp);
+}

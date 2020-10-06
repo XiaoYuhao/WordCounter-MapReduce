@@ -1,8 +1,8 @@
 
 #include"process_pool.h"
 
-Mapper *Mapper_Point = NULL;
-Reducer *Reducer_Point = NULL;
+Mapper *Mapper_Pointer = NULL;
+Reducer *Reducer_Pointer = NULL;
 
 bool isspace(char c){
     if(c==' ')return true;
@@ -12,7 +12,7 @@ bool isspace(char c){
 class WordCounter:public Mapper
 {
 public:
-    virtual void Map(const std::string input){
+    virtual void Map(const std::string &input){
         const int n = input.length();
         for(int i=0;i<n;){
             while((i<n)&&isspace(input[i]))i++;
@@ -25,38 +25,26 @@ public:
     }
 };
 
+class Adder:public Reducer
+{
+public:
+    virtual void Reduce(const std::string &key, const std::vector<std::string> &valist){
+        u_int64_t value = 0;
+        for(auto val: valist){
+            value += stoi(val);
+        }
+        Emit(key, std::to_string(value));
+    }    
+};
+
 
 int main(){
     WordCounter obj;
-    Mapper_Point = &obj;
+    Mapper_Pointer = &obj;
+    Adder reduce_obj;
+    Reducer_Pointer = &reduce_obj;
 
     process_pool* pool=process_pool::create(10);
     pool->run();
     return 0;
 }
-
-/*
-#include"filesystem.h"
-
-int main(){
-    LocalFileSystem *fs=LocalFileSystem::create();
-    FILE *fp;
-    int ret = 0;
-    ret = fs->fsopen(&fp, "file/origin.txt", "r");
-    if(ret < 0){
-        printf("open file failed...\n");
-        exit(0);
-    }
-    char buf[1024];
-    //fs->fsread(buf,1,10,fd);
-    //fs->fsseek(fp,30,SEEK_SET);
-    int count = 0;
-    while(feof(fp)==0){
-        ret = fread(buf, 1, 1, fp);
-        if(buf[0]=='\n') printf(" %d", count);
-        printf("%c",buf[0]);
-        count++;
-    }
-    return 0;
-}
-*/

@@ -4,8 +4,8 @@
 process_pool* process_pool::_instance = NULL;
 
 extern LocalFileSystem *fs;
-extern Mapper *Mapper_Point;
-extern Reducer *Reducer_Point;
+extern Mapper *Mapper_Pointer;
+extern Reducer *Reducer_Pointer;
 
 static int sig_pipefd[2];
 
@@ -113,28 +113,53 @@ void process_pool::run_worker(){
                     ret = fs->fsread(buf,1,mtp.end-mtp.start,fp);
                     fs->fsclose(fp);
                     std::string str(buf);
-                    std::cout<<str<<std::endl;
 
-                    Mapper_Point->set_config(mtp.savefile);
-                    Mapper_Point->Map(str);
+                    Mapper_Pointer->Map(str);
+                    Mapper_Pointer->save_map_result(mtp.savefile);
 
                     map_result_package mrp(SUCCESS);
                     ret = send(sockfd, (void*)&mrp, sizeof(mrp), MSG_DONTWAIT);
                 }
                 else if(header.package_type == PART_TASK){
+                    /*
                     partition_task_package ptp;
                     ret = recv(sockfd, (void*)&ptp, sizeof(ptp), MSG_DONTWAIT);
+                    
                     pthread_mutex_lock(&mm->mutex);
                     Mapper_Point->Partition(ptp.savefile);
                     pthread_mutex_unlock(&mm->mutex);
 
                     partition_result_package prp(SUCCESS);
                     ret = send(sockfd, (void*)&prp, sizeof(prp), MSG_DONTWAIT);
-                    //stop = true;
+                    */
+                }
+                else if(header.package_type == SORT_TASK){
+                    printf("No.%d worker to do sort task...\n", index);
+                    sort_task_package stp;
+                    ret = recv(sockfd, (void*)&stp, sizeof(stp), MSG_DONTWAIT);
+
+                    std::cout<<stp.prefix<<std::endl;
+                    Mapper_Pointer->Sort(stp.prefix, stp.nfile, stp.savefile);
+
+                    sort_result_package srp(SUCCESS);
+                    ret = send(sockfd, (void*)&srp, sizeof(srp), MSG_DONTWAIT);
                 }
                 else if(header.package_type == REDUCE_TASK){
                     printf("No.%d worker to do reduce task...\n", index);
-                    
+                    reduce_task_package rtp;
+                    ret = recv(sockfd, (void*)&rtp, sizeof(rtp), MSG_DONTWAIT);
+
+                    Reducer_Pointer->set_config(rtp.outputfile);
+                    Reducer_Pointer->Combine(rtp.inputfile);
+                    //Reducer_Pointer->
+                    reduce_result_package rrp(SUCCESS);
+                    ret = send(sockfd, (void*)&rrp, sizeof(rrp), MSG_DONTWAIT);
+                }
+                else if(header.package_type == QUIT_MESS){
+                    quit_message_package qmp;
+                    ret = recv(sockfd, (void*)&qmp, sizeof(qmp), MSG_DONTWAIT);
+                    stop = true;
+                    break;
                 }
             }
             else if((sockfd==sig_pipefd[0])&&(events[i].events&EPOLLIN)){       //接收信号
@@ -171,7 +196,7 @@ void process_pool::run_master(){
         addfd(epollfd, sub_process[i].pipefd[0]);
     }
     int ret;
-    int now=0;
+    int item_num=0;
     FILE *fp;
     fs->fsopen(&fp, "file/origin.txt", "r");
     assert((fp!=NULL));
@@ -181,20 +206,21 @@ void process_pool::run_master(){
         ret = fs->fsread(buf,1,1,fp);
         if(buf[0]=='\n'){
             char filename[128];
-            sprintf(filename, "file/intermediate%d.txt", now);
+            sprintf(filename, "file/intermediate%d.txt", item_num);
             map_task_package mtp(start, end, filename);
             if(end-start==0)break;
             start = end+1;
             
-            ret = send(sub_process[now].pipefd[0], (void*)&mtp, sizeof(mtp), MSG_DONTWAIT);
+            ret = send(sub_process[item_num].pipefd[0], (void*)&mtp, sizeof(mtp), MSG_DONTWAIT);
             if((ret<0)&&(errno!=EAGAIN)){
                 printf("master send failure.\n");
             }
-            now++;
+            item_num++;
         }
         end++;
     }
     fs->fsclose(fp);
+    int count = item_num;
         
     while(!stop){
         int num = epoll_wait(epollfd, events, MAX_EVENT_NUM, -1);
@@ -251,18 +277,40 @@ void process_pool::run_master(){
                 if(header.package_type == MAP_RES){
                     map_result_package mrp;
                     ret = recv(sockfd, (void*)&mrp, sizeof(mrp), MSG_DONTWAIT);
-                    
+                    count--;
+                    if(count == 0){
+                        sort_task_package stp(item_num, "file/intermediate", "file/sort.txt");
+                        ret = send(sockfd, (void*)&stp, sizeof(stp), MSG_DONTWAIT);
+                    }
+                    /*
                     partition_task_package ptp("file/region.txt");
                     ret = send(sockfd, (void*)&ptp, sizeof(ptp), MSG_DONTWAIT);
+                    */
                 }
                 else if(header.package_type == PART_RES){
+                    /*
                     partition_result_package prp;
                     ret = recv(sockfd, (void*)&prp, sizeof(prp), MSG_DONTWAIT);
                     
-                    now--;
-                    if(now == 0){
+                    item_num--;
+                    if(item_num == 0){
                         reduce_task_package rtp("file/region.txt", "file/result.txt");
                         ret = send(sockfd, (void*)&rtp, sizeof(rtp), MSG_DONTWAIT);
+                    }
+                    */
+                }
+                else if(header.package_type == SORT_RES){
+                    sort_result_package srp;
+                    ret = recv(sockfd, (void*)&srp, sizeof(srp), MSG_DONTWAIT);
+
+                    reduce_task_package rtp("file/sort.txt", "file/result.txt");
+                    ret = send(sockfd, (void*)&rtp, sizeof(rtp), MSG_DONTWAIT);
+                }
+                else if(header.package_type == REDUCE_RES){
+                    printf("MapReduce is finished successful. The result file is file/result.txt\n");
+                    quit_message_package qmp(0);
+                    for(int k=0;k<process_number;k++){
+                        ret = send(sub_process[k].pipefd[0], (void*)&qmp, sizeof(qmp), MSG_DONTWAIT);
                     }
                 }
             }
